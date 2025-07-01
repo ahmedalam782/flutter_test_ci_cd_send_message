@@ -106,7 +106,7 @@ jobs:
           url=$(curl --upload-file build/app/outputs/flutter-apk/app-release.apk https://transfer.sh/${{ needs.Get_Info.outputs.date_url }}-app-release.apk)
           echo "upload_url=${url}" >> $GITHUB_OUTPUT
 
-      - uses: actions/upload-artifact@v2
+      - uses: actions/upload-artifact@v3
         with:
           name: ${{ needs.Get_Info.outputs.branch_name }}-app-release.apk
           path: build/app/outputs/flutter-apk/app-release.apk
