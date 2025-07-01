@@ -14,7 +14,7 @@ jobs:
     steps:
       - uses: kolpav/purge-artifacts-action@v1
         with:
-          token: ${{ secrets.TOKEN_GITHUB }}
+          token: ${{ secrets.GITHUB_TOKEN }}
           expire-in: 0days
 
   Get_Info:
