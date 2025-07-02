@@ -1,4 +1,4 @@
-name: CI/CD Build APK and Upload to Drive and Notify
+name: CI/CD Build APK and Upload to Drive and Send Notifications
 
 on:
   push:
@@ -13,10 +13,11 @@ jobs:
     steps:
       - uses: kolpav/purge-artifacts-action@v1
         with:
-          token: ${{ secrets.GITHUB_TOKEN }}  # Use default GitHub token
+          token: ${{ secrets.TOKEN_GITHUB }}
           expire-in: 0days
 
   Get_Info:
+    name: Get Info
     runs-on: ubuntu-latest
     outputs:
       branch_name: ${{ steps.branch_name.outputs.branch_name }}
@@ -47,6 +48,7 @@ jobs:
         run: echo "date_url=$(git log -1 --pretty=%cd --date=format:'%Y-%m-%d')" >> $GITHUB_OUTPUT
 
   Build_Android_Apk:
+    name: Build Android APK
     needs: [Get_Info, delete-artifacts]
     runs-on: ubuntu-latest
     steps:
@@ -59,14 +61,20 @@ jobs:
 
       - uses: subosito/flutter-action@v2
         with:
-          flutter-version: 3.29.3
+          flutter-version: 3.32.5
           channel: stable
 
+      - run: flutter doctor -v
       - run: flutter clean
       - run: flutter pub get
-      - run: flutter build apk --release --no-tree-shake-icons
+
+      - name: Build APK
+        run: |
+          flutter build apk --release --no-tree-shake-icons
+          ls -R build/app/outputs || echo "⚠️ APK directory not found!"
 
   Upload_Apk:
+    name: Upload APK
     needs: [Get_Info, delete-artifacts, Build_Android_Apk]
     runs-on: ubuntu-latest
     outputs:
@@ -75,7 +83,8 @@ jobs:
     steps:
       - uses: actions/checkout@v2
 
-      - id: select_folder
+      - name: Set Folder ID
+        id: select_folder
         run: |
           if [[ "${{ needs.Get_Info.outputs.branch_name }}" == "main" ]]; then
             echo "folder_id=${{ secrets.MAIN_FOLDER_ID }}" >> $GITHUB_OUTPUT
@@ -83,34 +92,40 @@ jobs:
             echo "folder_id=${{ secrets.TEST_FOLDER_ID }}" >> $GITHUB_OUTPUT
           fi
 
-      - id: find_apk
+      - name: Define APK Path
+        id: find_apk
         run: |
-          apk_path=$(find build/app/outputs -type f -name 'app-release.apk' | head -n 1)
-          if [ -z "$apk_path" ]; then echo "APK not found!"; exit 1; fi
-          echo "apk_path=$apk_path" >> $GITHUB_OUTPUT
+          apk_path="build/app/outputs/flutter-apk/app-release.apk"
+          if [ ! -f "$apk_path" ]; then
+            echo "❌ APK not found at $apk_path"
+            exit 1
+          fi
+          echo "apk_path=$apk_path" >> $GITHUB_ENV
 
       - name: Upload to Google Drive
         uses: adityak74/google-drive-upload-git-action@main
         with:
           credentials: "${{ secrets.GOOGLE_DRIVE_CREDENTIALS }}"
-          filename: "${{ steps.find_apk.outputs.apk_path }}"
-          folderId: "${{ steps.select_folder.outputs.folder_id }}"
+          filename: "${{ env.apk_path }}"
+          folderId: ${{ steps.select_folder.outputs.folder_id }}
           name: "${{ needs.Get_Info.outputs.branch_name }}_apk_${{ needs.Get_Info.outputs.date_time }}.apk"
           overwrite: "true"
           mimeType: "application/vnd.android.package-archive"
 
-      - id: upload_artifact
+      - name: Upload to Transfer.sh
+        id: upload_artifact
         run: |
-          url=$(curl --upload-file "${{ steps.find_apk.outputs.apk_path }}" https://transfer.sh/${{ needs.Get_Info.outputs.date_url }}-app-release.apk)
+          url=$(curl --upload-file "${{ env.apk_path }}" https://transfer.sh/${{ needs.Get_Info.outputs.date_url }}-app-release.apk)
           echo "upload_url=$url" >> $GITHUB_OUTPUT
 
       - name: Upload APK to GitHub Artifact
         uses: actions/upload-artifact@v4
         with:
           name: app-release.apk
-          path: "${{ steps.find_apk.outputs.apk_path }}"
+          path: "${{ env.apk_path }}"
 
   Notify_User:
+    name: Notify User
     needs: [Get_Info, delete-artifacts, Build_Android_Apk, Upload_Apk]
     runs-on: ubuntu-latest
     steps:
@@ -132,7 +147,7 @@ jobs:
             📅  `${{ needs.Get_Info.outputs.date_time }}`
 
             🔗 [Google Drive Folder](https://drive.google.com/drive/folders/${{ needs.Upload_Apk.outputs.folder_id }})
-            🔗 [Transfer.sh Download Link](${{ needs.Upload_Apk.outputs.upload_url }})
+            🔗 [Transfer.sh Link](${{ needs.Upload_Apk.outputs.upload_url }})
 
       - name: Notify Gmail
         uses: dawidd6/action-send-mail@v3
@@ -154,7 +169,7 @@ jobs:
             - Branch: ${{ needs.Get_Info.outputs.branch_name }}
             - Date: ${{ needs.Get_Info.outputs.date_time }}
 
-            Download it here:
+            Download links:
             🔗 Google Drive: https://drive.google.com/drive/folders/${{ needs.Upload_Apk.outputs.folder_id }}
             🔗 Transfer.sh: ${{ needs.Upload_Apk.outputs.upload_url }}
 
