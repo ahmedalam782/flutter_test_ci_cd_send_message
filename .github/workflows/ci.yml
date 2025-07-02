@@ -96,19 +96,21 @@ jobs:
           echo "Test folder ID exists: ${{ secrets.TEST_FOLDER_ID != '' }}"
           
           if [[ "${{ needs.Get_Info.outputs.branch_name }}" == "main" ]]; then
-            if [[ -z "${{ secrets.MAIN_FOLDER_ID }}" ]]; then
-              echo "Error: MAIN_FOLDER_ID secret is not set!"
-              exit 1
+            if [[ -n "${{ secrets.MAIN_FOLDER_ID }}" ]]; then
+              echo "folder_id=${{ secrets.MAIN_FOLDER_ID }}" >> $GITHUB_OUTPUT
+              echo "Selected main folder: ${{ secrets.MAIN_FOLDER_ID }}"
+            else
+              echo "⚠️ MAIN_FOLDER_ID secret is not set!"
+              echo "folder_id=" >> $GITHUB_OUTPUT
             fi
-            echo "folder_id=${{ secrets.MAIN_FOLDER_ID }}" >> $GITHUB_OUTPUT
-            echo "Selected main folder: ${{ secrets.MAIN_FOLDER_ID }}"
           else
-            if [[ -z "${{ secrets.TEST_FOLDER_ID }}" ]]; then
-              echo "Error: TEST_FOLDER_ID secret is not set!"
-              exit 1
+            if [[ -n "${{ secrets.TEST_FOLDER_ID }}" ]]; then
+              echo "folder_id=${{ secrets.TEST_FOLDER_ID }}" >> $GITHUB_OUTPUT
+              echo "Selected test folder: ${{ secrets.TEST_FOLDER_ID }}"
+            else
+              echo "⚠️ TEST_FOLDER_ID secret is not set!"
+              echo "folder_id=" >> $GITHUB_OUTPUT
             fi
-            echo "folder_id=${{ secrets.TEST_FOLDER_ID }}" >> $GITHUB_OUTPUT
-            echo "Selected test folder: ${{ secrets.TEST_FOLDER_ID }}"
           fi
           
       - name: Upload to Google Drive
