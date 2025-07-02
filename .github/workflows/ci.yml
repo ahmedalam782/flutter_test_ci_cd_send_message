@@ -88,15 +88,31 @@ jobs:
           echo "Found APK at: $apk_path"
           echo "apk_path=$apk_path" >> $GITHUB_OUTPUT
           
-      - id: select_folder
+      - name: Select folder and debug
+        id: select_folder
         run: |
+          echo "Branch name: ${{ needs.Get_Info.outputs.branch_name }}"
+          echo "Main folder ID exists: ${{ secrets.MAIN_FOLDER_ID != '' }}"
+          echo "Test folder ID exists: ${{ secrets.TEST_FOLDER_ID != '' }}"
+          
           if [[ "${{ needs.Get_Info.outputs.branch_name }}" == "main" ]]; then
+            if [[ -z "${{ secrets.MAIN_FOLDER_ID }}" ]]; then
+              echo "Error: MAIN_FOLDER_ID secret is not set!"
+              exit 1
+            fi
             echo "folder_id=${{ secrets.MAIN_FOLDER_ID }}" >> $GITHUB_OUTPUT
+            echo "Selected main folder: ${{ secrets.MAIN_FOLDER_ID }}"
           else
+            if [[ -z "${{ secrets.TEST_FOLDER_ID }}" ]]; then
+              echo "Error: TEST_FOLDER_ID secret is not set!"
+              exit 1
+            fi
             echo "folder_id=${{ secrets.TEST_FOLDER_ID }}" >> $GITHUB_OUTPUT
+            echo "Selected test folder: ${{ secrets.TEST_FOLDER_ID }}"
           fi
           
       - name: Upload to Google Drive
+        if: steps.select_folder.outputs.folder_id != ''
         uses: adityak74/google-drive-upload-git-action@main
         with:
           credentials: "${{ secrets.GOOGLE_DRIVE_CREDENTIALS }}"
@@ -105,6 +121,12 @@ jobs:
           name: "${{ needs.Get_Info.outputs.branch_name }}_apk_${{ needs.Get_Info.outputs.date_time }}.apk"
           overwrite: "true"
           mimeType: "application/vnd.android.package-archive"
+          
+      - name: Skip Google Drive upload
+        if: steps.select_folder.outputs.folder_id == ''
+        run: |
+          echo "⚠️ Skipping Google Drive upload - folder ID not available"
+          echo "Please check your MAIN_FOLDER_ID and TEST_FOLDER_ID secrets"
           
       - id: upload_artifact
         run: |
