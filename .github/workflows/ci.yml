@@ -115,11 +115,15 @@ jobs:
           
       - name: Check credentials
         id: check_credentials
+        env:
+          GDRIVE_CREDS: ${{ secrets.GOOGLE_DRIVE_CREDENTIALS }}
         run: |
-          if [[ -n "${{ secrets.GOOGLE_DRIVE_CREDENTIALS }}" ]]; then
+          if [ -n "${GDRIVE_CREDS}" ]; then
             echo "has_credentials=true" >> $GITHUB_OUTPUT
+            echo "Google Drive credentials found"
           else
             echo "has_credentials=false" >> $GITHUB_OUTPUT
+            echo "Google Drive credentials not found"
           fi
           
       - name: Upload to Google Drive
