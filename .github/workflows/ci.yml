@@ -9,11 +9,13 @@ on:
 
 jobs:
   delete-artifacts:
+    name: Delete Old Artifacts
     runs-on: ubuntu-latest
     steps:
-      - uses: kolpav/purge-artifacts-action@v1
+      - name: Purge Old Artifacts
+        uses: kolpav/purge-artifacts-action@v1
         with:
-          token: ${{ secrets.TOKEN_GITHUB }}
+          token: ${{ secrets.PAT_DELETE_ARTIFACTS }}
           expire-in: 0days
 
   Get_Info:
