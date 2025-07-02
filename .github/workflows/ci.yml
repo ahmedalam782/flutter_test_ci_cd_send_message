@@ -13,7 +13,7 @@ jobs:
     steps:
       - uses: kolpav/purge-artifacts-action@v1
         with:
-          token: ${{ secrets.PAT_TOKEN }} # RECOMMENDED: replace with personal access token
+          token: ${{ secrets.GITHUB_TOKEN }}  # Use default GitHub token
           expire-in: 0days
 
   Get_Info:
@@ -87,13 +87,13 @@ jobs:
         run: |
           apk_path=$(find build/app/outputs -type f -name 'app-release.apk' | head -n 1)
           if [ -z "$apk_path" ]; then echo "APK not found!"; exit 1; fi
-          echo "apk_path=$apk_path" >> $GITHUB_ENV
+          echo "apk_path=$apk_path" >> $GITHUB_OUTPUT
 
       - name: Upload to Google Drive
         uses: adityak74/google-drive-upload-git-action@main
         with:
           credentials: "${{ secrets.GOOGLE_DRIVE_CREDENTIALS }}"
-          filename: "${{ env.apk_path }}"
+          filename: "${{ steps.find_apk.outputs.apk_path }}"
           folderId: "${{ steps.select_folder.outputs.folder_id }}"
           name: "${{ needs.Get_Info.outputs.branch_name }}_apk_${{ needs.Get_Info.outputs.date_time }}.apk"
           overwrite: "true"
@@ -101,65 +101,11 @@ jobs:
 
       - id: upload_artifact
         run: |
-          url=$(curl --upload-file "${{ env.apk_path }}" https://transfer.sh/${{ needs.Get_Info.outputs.date_url }}-app-release.apk)
+          url=$(curl --upload-file "${{ steps.find_apk.outputs.apk_path }}" https://transfer.sh/${{ needs.Get_Info.outputs.date_url }}-app-release.apk)
           echo "upload_url=$url" >> $GITHUB_OUTPUT
 
       - name: Upload APK to GitHub Artifact
-        uses: actions/upload-artifact@v4.3.1
+        uses: actions/upload-artifact@v4
         with:
           name: app-release.apk
-          path: "${{ env.apk_path }}"
-
-  Notify_User:
-    needs: [Get_Info, delete-artifacts, Build_Android_Apk, Upload_Apk]
-    runs-on: ubuntu-latest
-    steps:
-      - uses: actions/checkout@v2
-
-      - name: Notify Telegram Channel
-        uses: appleboy/telegram-action@master
-        with:
-          to: ${{ secrets.TELEGRAM_CHANNEL_ID }}
-          token: ${{ secrets.TELEGRAM_BOT_TOKEN }}
-          format: markdown
-          message: |
-            🚀 *New APK Build Uploaded* 🚀
-
-            🔔 *Project:* `${{ needs.Get_Info.outputs.project_name }}`
-            🤖 *Branch:* `${{ needs.Get_Info.outputs.branch_name }}`
-            👤 *Author:* `${{ needs.Get_Info.outputs.commit_author }}`
-            📩 *Email:* `${{ needs.Get_Info.outputs.commit_author_email }}`
-            📅  `${{ needs.Get_Info.outputs.date_time }}`
-
-            🔗 [Google Drive Folder](https://drive.google.com/drive/folders/${{ needs.Upload_Apk.outputs.folder_id }})
-            🔗 [Transfer.sh Download Link](${{ needs.Upload_Apk.outputs.upload_url }})
-
-      - name: Notify Gmail
-        uses: dawidd6/action-send-mail@v3
-        with:
-          server_address: smtp.gmail.com
-          server_port: 465
-          username: ${{ secrets.GMAIL_USERNAME }}
-          password: ${{ secrets.GMAIL_PASSWORD }}
-          from: ${{ needs.Get_Info.outputs.commit_author_email }}
-          to: mazenn770@gmail.com
-          subject: "CI 👉🏻 New APK Build Uploaded"
-          convert_markdown: true
-          body: |
-            Dear Sir,
-
-            A new APK build has been uploaded to Google Drive.
-
-            - Project: ${{ needs.Get_Info.outputs.project_name }}
-            - Branch: ${{ needs.Get_Info.outputs.branch_name }}
-            - Date: ${{ needs.Get_Info.outputs.date_time }}
-
-            Download it here:
-            🔗 Google Drive: https://drive.google.com/drive/folders/${{ needs.Upload_Apk.outputs.folder_id }}
-            🔗 Transfer.sh: ${{ needs.Upload_Apk.outputs.upload_url }}
-
-            Best regards,  
-            ${{ needs.Get_Info.outputs.commit_author }}  
-            Flutter Developer  
-            IX Solutions Company  
-            Email: ${{ needs.Get_Info.outputs.commit_author_email }}
+          path: "${{ steps.find_apk.outputs.apk_path }}"
