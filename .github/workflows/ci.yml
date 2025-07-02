@@ -114,7 +114,7 @@ jobs:
           fi
           
       - name: Upload to Google Drive
-        if: steps.select_folder.outputs.folder_id != ''
+        if: steps.select_folder.outputs.folder_id != '' && secrets.GOOGLE_DRIVE_CREDENTIALS != ''
         uses: adityak74/google-drive-upload-git-action@main
         with:
           credentials: "${{ secrets.GOOGLE_DRIVE_CREDENTIALS }}"
@@ -125,10 +125,15 @@ jobs:
           mimeType: "application/vnd.android.package-archive"
           
       - name: Skip Google Drive upload
-        if: steps.select_folder.outputs.folder_id == ''
+        if: steps.select_folder.outputs.folder_id == '' || secrets.GOOGLE_DRIVE_CREDENTIALS == ''
         run: |
-          echo "⚠️ Skipping Google Drive upload - folder ID not available"
-          echo "Please check your MAIN_FOLDER_ID and TEST_FOLDER_ID secrets"
+          echo "⚠️ Skipping Google Drive upload"
+          if [[ -z "${{ steps.select_folder.outputs.folder_id }}" ]]; then
+            echo "- Missing folder ID (check MAIN_FOLDER_ID/TEST_FOLDER_ID secrets)"
+          fi
+          if [[ -z "${{ secrets.GOOGLE_DRIVE_CREDENTIALS }}" ]]; then
+            echo "- Missing Google Drive credentials (check GOOGLE_DRIVE_CREDENTIALS secret)"
+          fi
           
       - id: upload_artifact
         run: |
