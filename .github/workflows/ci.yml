@@ -113,8 +113,17 @@ jobs:
             fi
           fi
           
+      - name: Check credentials
+        id: check_credentials
+        run: |
+          if [[ -n "${{ secrets.GOOGLE_DRIVE_CREDENTIALS }}" ]]; then
+            echo "has_credentials=true" >> $GITHUB_OUTPUT
+          else
+            echo "has_credentials=false" >> $GITHUB_OUTPUT
+          fi
+          
       - name: Upload to Google Drive
-        if: steps.select_folder.outputs.folder_id != '' && secrets.GOOGLE_DRIVE_CREDENTIALS != ''
+        if: steps.select_folder.outputs.folder_id != '' && steps.check_credentials.outputs.has_credentials == 'true'
         uses: adityak74/google-drive-upload-git-action@main
         with:
           credentials: "${{ secrets.GOOGLE_DRIVE_CREDENTIALS }}"
@@ -125,13 +134,13 @@ jobs:
           mimeType: "application/vnd.android.package-archive"
           
       - name: Skip Google Drive upload
-        if: steps.select_folder.outputs.folder_id == '' || secrets.GOOGLE_DRIVE_CREDENTIALS == ''
+        if: steps.select_folder.outputs.folder_id == '' || steps.check_credentials.outputs.has_credentials == 'false'
         run: |
           echo "⚠️ Skipping Google Drive upload"
           if [[ -z "${{ steps.select_folder.outputs.folder_id }}" ]]; then
             echo "- Missing folder ID (check MAIN_FOLDER_ID/TEST_FOLDER_ID secrets)"
           fi
-          if [[ -z "${{ secrets.GOOGLE_DRIVE_CREDENTIALS }}" ]]; then
+          if [[ "${{ steps.check_credentials.outputs.has_credentials }}" == "false" ]]; then
             echo "- Missing Google Drive credentials (check GOOGLE_DRIVE_CREDENTIALS secret)"
           fi
           
