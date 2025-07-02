@@ -92,7 +92,7 @@ jobs:
         uses: adityak74/google-drive-upload-git-action@main
         with:
           credentials: "${{ secrets.GOOGLE_DRIVE_CREDENTIALS }}"
-          filename: "build/app/outputs/apk/release/app-release.apk"
+          filename: "build/app/outputs/flutter-apk/app-release.apk"
           folderId: ${{ steps.select_folder.outputs.folder_id }}
           name: "${{ needs.Get_Info.outputs.branch_name }}_apk_${{ needs.Get_Info.outputs.date_time }}.apk"
           overwrite: "true"
@@ -100,14 +100,14 @@ jobs:
 
       - id: upload_artifact
         run: |
-          url=$(curl --upload-file build/app/outputs/apk/release/app-release.apk https://transfer.sh/${{ needs.Get_Info.outputs.date_url }}-app-release.apk)
+          url=$(curl --upload-file build/app/outputs/flutter-apk/app-release.apk https://transfer.sh/${{ needs.Get_Info.outputs.date_url }}-app-release.apk)
           echo "upload_url=${url}" >> $GITHUB_OUTPUT
 
       - name: Upload APK to GitHub Artifacts
         uses: actions/upload-artifact@v4
         with:
           name: ${{ needs.Get_Info.outputs.branch_name }}-app-release.apk
-          path: build/app/outputs/apk/release/app-release.apk
+          path: build/app/outputs/flutter-apk/app-release.apk
 
   Notify_User:
     needs: [Get_Info, delete-artifacts, Build_Android_Apk, Upload_Apk]
