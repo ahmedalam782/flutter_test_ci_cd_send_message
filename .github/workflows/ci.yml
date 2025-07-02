@@ -127,7 +127,7 @@ jobs:
           fi
           
       - name: Upload to Google Drive
-        if: steps.select_folder.outputs.folder_id != '' && steps.check_credentials.outputs.has_credentials == 'true'
+        if: false  # Temporarily disabled - enable after setting up credentials
         uses: adityak74/google-drive-upload-git-action@main
         with:
           credentials: "${{ secrets.GOOGLE_DRIVE_CREDENTIALS }}"
@@ -137,16 +137,15 @@ jobs:
           overwrite: "true"
           mimeType: "application/vnd.android.package-archive"
           
-      - name: Skip Google Drive upload
-        if: steps.select_folder.outputs.folder_id == '' || steps.check_credentials.outputs.has_credentials == 'false'
+      - name: Google Drive upload disabled
         run: |
-          echo "⚠️ Skipping Google Drive upload"
-          if [[ -z "${{ steps.select_folder.outputs.folder_id }}" ]]; then
-            echo "- Missing folder ID (check MAIN_FOLDER_ID/TEST_FOLDER_ID secrets)"
-          fi
-          if [[ "${{ steps.check_credentials.outputs.has_credentials }}" == "false" ]]; then
-            echo "- Missing Google Drive credentials (check GOOGLE_DRIVE_CREDENTIALS secret)"
-          fi
+          echo "📝 Google Drive upload is temporarily disabled"
+          echo "To enable it:"
+          echo "1. Set up Google Service Account and get JSON key"
+          echo "2. Base64 encode the JSON: base64 -w 0 < service-account.json"
+          echo "3. Add to GitHub secrets as GOOGLE_DRIVE_CREDENTIALS"
+          echo "4. Add folder IDs as MAIN_FOLDER_ID and TEST_FOLDER_ID"
+          echo "5. Change 'if: false' to 'if: steps.select_folder.outputs.folder_id != \"\" && steps.check_credentials.outputs.has_credentials == \"true\"'"
           
       - id: upload_artifact
         run: |
