@@ -1,4 +1,4 @@
-name: CI/CD Build APK and Upload to file.io and Notify
+name: CI/CD Build APK and Upload to Drive and Notify
 
 on:
   push:
@@ -44,6 +44,7 @@ jobs:
     needs: [Get_Info, delete-artifacts]
     runs-on: ubuntu-latest
     outputs:
+      folder_id: ${{ steps.select_folder.outputs.folder_id }}
       upload_url: ${{ steps.upload_artifact.outputs.upload_url }}
     steps:
       - uses: actions/checkout@v2
@@ -67,36 +68,32 @@ jobs:
       - name: Find and verify APK
         id: find_apk
         run: |
-          echo "Searching for APK files..."
-          find . -name "*.apk" -type f
-          
-          if [ -f "build/app/outputs/flutter-apk/app-release.apk" ]; then
-            apk_path="build/app/outputs/flutter-apk/app-release.apk"
-          elif [ -f "build/app/outputs/apk/release/app-release.apk" ]; then
-            apk_path="build/app/outputs/apk/release/app-release.apk"
-          else
-            apk_path=$(find . -name "*release*.apk" -type f | head -n 1)
-          fi
-          
-          if [ -z "$apk_path" ]; then
-            echo "APK not found!"
+          echo "Searching for APK..."
+          apk_path="build/app/outputs/flutter-apk/app-release.apk"
+          if [ ! -f "$apk_path" ]; then
+            echo "APK not found at $apk_path"
             exit 1
           fi
-          
-          echo "Found APK at: $apk_path"
           echo "apk_path=$apk_path" >> $GITHUB_OUTPUT
+
+      - name: Select folder
+        id: select_folder
+        run: |
+          if [[ "${{ needs.Get_Info.outputs.branch_name }}" == "main" ]]; then
+            echo "folder_id=${{ secrets.MAIN_FOLDER_ID }}" >> $GITHUB_OUTPUT
+          else
+            echo "folder_id=${{ secrets.TEST_FOLDER_ID }}" >> $GITHUB_OUTPUT
 
       - name: Install jq
         run: sudo apt-get install -y jq
 
-      - id: upload_artifact
-        name: Upload to file.io
+      - name: Upload to transfer.sh
+        id: upload_artifact
         run: |
           apk="${{ steps.find_apk.outputs.apk_path }}"
-          response=$(curl -s -F "file=@$apk" https://file.io/?expires=1w)
-          echo "Response: $response"
-          url=$(echo "$response" | jq -r '.link')
-          if [ "$url" == "null" ] || [ -z "$url" ]; then
+          echo "Uploading $apk to transfer.sh"
+          url=$(curl --upload-file "$apk" https://transfer.sh/app-release.apk)
+          if [ -z "$url" ]; then
             echo "❌ Upload failed"
             exit 1
           fi
@@ -108,53 +105,3 @@ jobs:
         with:
           name: app-release.apk
           path: "${{ steps.find_apk.outputs.apk_path }}"
-
-  Notify_User:
-    needs: [Get_Info, Build_And_Upload_APK]
-    runs-on: ubuntu-latest
-    steps:
-      - name: Notify Telegram Channel
-        uses: appleboy/telegram-action@master
-        with:
-          to: ${{ secrets.TELEGRAM_CHANNEL_ID }}
-          token: ${{ secrets.TELEGRAM_BOT_TOKEN }}
-          format: markdown
-          message: |
-            🚀 *New APK Build Uploaded* 🚀
-
-            🔔 *Project:* `${{ needs.Get_Info.outputs.project_name }}`
-            🤖 *Branch:* `${{ needs.Get_Info.outputs.branch_name }}`
-            👤 *Author:* `${{ needs.Get_Info.outputs.commit_author }}`
-            📩 *Email:* `${{ needs.Get_Info.outputs.commit_author_email }}`
-            📅  `${{ needs.Get_Info.outputs.date_time }}`
-
-            🔗 [Download APK](${{ needs.Build_And_Upload_APK.outputs.upload_url }})
-
-      - name: Notify Gmail
-        uses: dawidd6/action-send-mail@v3
-        with:
-          server_address: smtp.gmail.com
-          server_port: 465
-          username: ${{ secrets.GMAIL_USERNAME }}
-          password: ${{ secrets.GMAIL_PASSWORD }}
-          from: ${{ secrets.GMAIL_USERNAME }}
-          to: mazenn770@gmail.com
-          subject: "CI 👉🏻 New APK Build Uploaded"
-          convert_markdown: true
-          body: |
-            Dear Sir,
-
-            A new APK build has been uploaded:
-
-            - Project: ${{ needs.Get_Info.outputs.project_name }}
-            - Branch: ${{ needs.Get_Info.outputs.branch_name }}
-            - Date: ${{ needs.Get_Info.outputs.date_time }}
-
-            Download it here:
-            🔗 File.io: ${{ needs.Build_And_Upload_APK.outputs.upload_url }}
-
-            Best regards,  
-            ${{ needs.Get_Info.outputs.commit_author }}  
-            Flutter Developer  
-            IX Solutions Company  
-            Email: ${{ needs.Get_Info.outputs.commit_author_email }}
