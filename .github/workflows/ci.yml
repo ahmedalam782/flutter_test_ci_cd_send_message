@@ -70,6 +70,12 @@ jobs:
       - run: flutter pub get
       - run: flutter build apk --release --no-tree-shake-icons
 
+      - name: Upload APK Artifact
+        uses: actions/upload-artifact@v4
+        with:
+          name: app-release.apk
+          path: build/app/outputs/flutter-apk/app-release.apk
+
   Upload_Apk:
     needs: [Get_Info, delete-artifacts, Build_Android_Apk]
     runs-on: ubuntu-latest
@@ -79,6 +85,12 @@ jobs:
 
     steps:
       - uses: actions/checkout@v2
+
+      - name: Download APK Artifact
+        uses: actions/download-artifact@v4
+        with:
+          name: app-release.apk
+          path: apk
 
       - id: select_folder
         run: |
@@ -91,7 +103,7 @@ jobs:
       - name: Find APK Path
         id: find_apk
         run: |
-          apk_path=$(find build/app/outputs -type f -name 'app-release.apk' | head -n 1)
+          apk_path=$(find apk -type f -name 'app-release.apk' | head -n 1)
           echo "apk_path=$apk_path" >> $GITHUB_ENV
           echo "Found APK at $apk_path"
 
