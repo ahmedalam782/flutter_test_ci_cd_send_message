@@ -2,9 +2,7 @@ name: CI/CD Build APK and Upload to Drive and Notify
 
 on:
   push:
-    branches:
-      - main
-      - test
+    branches: [main, test]
   workflow_dispatch:
 
 jobs:
@@ -48,47 +46,35 @@ jobs:
       upload_url: ${{ steps.upload_artifact.outputs.upload_url }}
     steps:
       - uses: actions/checkout@v2
-      
+
       - uses: actions/setup-java@v2
         with:
           distribution: 'adopt'
           java-version: '17'
-          
+
       - uses: subosito/flutter-action@v2
         with:
           flutter-version: 3.29.3
           channel: stable
-          
+
       - name: Build APK
         run: |
           flutter clean
           flutter pub get
           flutter build apk --release --no-tree-shake-icons
-          
-      - name: Find and verify APK
+
+      - name: Find APK
         id: find_apk
         run: |
           echo "Searching for APK files..."
-          find . -name "*.apk" -type f
-          
-          # Try common Flutter APK locations
-          if [ -f "build/app/outputs/flutter-apk/app-release.apk" ]; then
-            apk_path="build/app/outputs/flutter-apk/app-release.apk"
-          elif [ -f "build/app/outputs/apk/release/app-release.apk" ]; then
-            apk_path="build/app/outputs/apk/release/app-release.apk"
-          else
-            apk_path=$(find . -name "*release*.apk" -type f | head -n 1)
-          fi
-
-          if [ -z "$apk_path" ]; then
-            echo "❌ APK not found!"
+          apk_path="build/app/outputs/flutter-apk/app-release.apk"
+          if [ ! -f "$apk_path" ]; then
+            echo "APK not found!"
             exit 1
           fi
-
-          echo "✅ Found APK at: $apk_path"
           echo "apk_path=$apk_path" >> $GITHUB_OUTPUT
 
-      - name: Select folder
+      - name: Select Google Drive folder
         id: select_folder
         run: |
           if [[ "${{ needs.Get_Info.outputs.branch_name }}" == "main" ]]; then
@@ -97,35 +83,17 @@ jobs:
             echo "folder_id=${{ secrets.TEST_FOLDER_ID }}" >> $GITHUB_OUTPUT
           fi
 
-      - name: Upload to Google Drive
-        if: false  # Enable later
-        uses: adityak74/google-drive-upload-git-action@main
-        with:
-          credentials: "${{ secrets.GOOGLE_DRIVE_CREDENTIALS }}"
-          filename: "${{ steps.find_apk.outputs.apk_path }}"
-          folderId: "${{ steps.select_folder.outputs.folder_id }}"
-          name: "${{ needs.Get_Info.outputs.branch_name }}_apk_${{ needs.Get_Info.outputs.date_time }}.apk"
-          overwrite: "true"
-          mimeType: "application/vnd.android.package-archive"
-
-      - name: Upload APK to transfer.sh
+      - name: Upload to filepush.dev
         id: upload_artifact
         run: |
           apk="${{ steps.find_apk.outputs.apk_path }}"
-
-          if [ ! -f "$apk" ]; then
-            echo "❌ APK not found at: $apk"
-            exit 1
-          fi
-
-          echo "Uploading to transfer.sh..."
-          url=$(curl --fail --upload-file "$apk" https://transfer.sh/$(basename $apk))
-
+          response=$(curl -s -F "file=@$apk" https://filepush.dev/api/upload)
+          url=$(echo "$response" | grep -oP '"url":"\K[^"]+')
           if [ -z "$url" ]; then
             echo "❌ Upload failed"
+            echo "Response: $response"
             exit 1
           fi
-
           echo "✅ Uploaded to: $url"
           echo "upload_url=$url" >> $GITHUB_OUTPUT
 
@@ -139,6 +107,8 @@ jobs:
     needs: [Get_Info, Build_And_Upload_APK]
     runs-on: ubuntu-latest
     steps:
+      - uses: actions/checkout@v2
+
       - name: Notify Telegram Channel
         uses: appleboy/telegram-action@master
         with:
@@ -146,16 +116,15 @@ jobs:
           token: ${{ secrets.TELEGRAM_BOT_TOKEN }}
           format: markdown
           message: |
-            🚀 *New APK Build Uploaded*
+            🚀 *New APK Build Uploaded* 🚀
 
-            📦 *Project:* `${{ needs.Get_Info.outputs.project_name }}`
-            🔀 *Branch:* `${{ needs.Get_Info.outputs.branch_name }}`
+            🔔 *Project:* `${{ needs.Get_Info.outputs.project_name }}`
+            🤖 *Branch:* `${{ needs.Get_Info.outputs.branch_name }}`
             👤 *Author:* `${{ needs.Get_Info.outputs.commit_author }}`
             📩 *Email:* `${{ needs.Get_Info.outputs.commit_author_email }}`
-            📅 `${{ needs.Get_Info.outputs.date_time }}`
+            📅  `${{ needs.Get_Info.outputs.date_time }}`
 
-            🔗 [Transfer.sh Link](${{ needs.Build_And_Upload_APK.outputs.upload_url }})
-            🔗 [Google Drive Folder](https://drive.google.com/drive/folders/${{ needs.Build_And_Upload_APK.outputs.folder_id }})
+            🔗 [Download APK](${{ needs.Build_And_Upload_APK.outputs.upload_url }})
 
       - name: Notify Gmail
         uses: dawidd6/action-send-mail@v3
@@ -166,23 +135,22 @@ jobs:
           password: ${{ secrets.GMAIL_PASSWORD }}
           from: ${{ needs.Get_Info.outputs.commit_author_email }}
           to: mazenn770@gmail.com
-          subject: "CI 👉 New APK Build Uploaded"
+          subject: "CI 👉🏻 New APK Build Uploaded"
           convert_markdown: true
           body: |
             Dear Sir,
 
-            A new APK build has been uploaded to Transfer.sh.
+            A new APK build has been uploaded.
 
             - Project: ${{ needs.Get_Info.outputs.project_name }}
             - Branch: ${{ needs.Get_Info.outputs.branch_name }}
             - Date: ${{ needs.Get_Info.outputs.date_time }}
 
-            📎 Download it here:
-            🔗 Transfer.sh: ${{ needs.Build_And_Upload_APK.outputs.upload_url }}
-            🔗 Google Drive (if enabled): https://drive.google.com/drive/folders/${{ needs.Build_And_Upload_APK.outputs.folder_id }}
+            Download it here:
+            🔗 APK: ${{ needs.Build_And_Upload_APK.outputs.upload_url }}
 
-            Regards,  
+            Best regards,  
             ${{ needs.Get_Info.outputs.commit_author }}  
             Flutter Developer  
-            IX Solutions  
+            IX Solutions Company  
             Email: ${{ needs.Get_Info.outputs.commit_author_email }}
