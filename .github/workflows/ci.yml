@@ -111,53 +111,191 @@ jobs:
             echo "folder_id=${{ secrets.TEST_FOLDER_ID }}" >> $GITHUB_OUTPUT
           fi
 
-      - name: Upload to filepush.dev with enhanced error handling
+      - name: Upload APK with multiple fallback services
         id: upload_artifact
         run: |
           apk="${{ steps.find_apk.outputs.apk_path }}"
           
           echo "📦 Uploading $(basename "$apk") ($(du -h "$apk" | cut -f1))"
           
-          # Verify file exists before upload
+          # Verify file exists
           if [ ! -f "$apk" ]; then
             echo "❌ APK file not found: $apk"
             exit 1
           fi
           
-          # Upload with enhanced error handling
-          echo "🔄 Starting upload..."
-          response=$(curl -s -w "\n%{http_code}" -F "file=@$apk" https://filepush.dev/api/upload)
+          upload_success=false
+          final_url=""
           
-          # Split response and HTTP code
-          http_code=$(echo "$response" | tail -n1)
-          json_response=$(echo "$response" | head -n -1)
-          
-          echo "📊 HTTP Status: $http_code"
-          echo "📋 Response: $json_response"
-          
-          # Check HTTP status
-          if [ "$http_code" != "200" ]; then
-            echo "❌ Upload failed with HTTP $http_code"
-            echo "Full response: $response"
-            exit 1
+          # Service 1: Try transfer.sh (most reliable)
+          echo "🔄 Trying transfer.sh..."
+          if url=$(curl -s -m 300 --upload-file "$apk" "https://transfer.sh/$(basename "$apk")" 2>/dev/null); then
+            if [[ "$url" =~ ^https:// ]] && [[ ${#url} -gt 20 ]]; then
+              echo "✅ transfer.sh success: $url"
+              final_url="$url"
+              upload_success=true
+            else
+              echo "❌ transfer.sh returned invalid URL: $url"
+            fi
+          else
+            echo "❌ transfer.sh failed"
           fi
           
-          # Extract URL with better error handling
-          url=$(echo "$json_response" | grep -oP '"url":"\K[^"]+' || echo "")
-          
-          if [ -z "$url" ]; then
-            echo "❌ Could not extract URL from response"
-            echo "JSON Response: $json_response"
-            # Try alternative JSON parsing
-            url=$(echo "$json_response" | python3 -c "import sys, json; data=json.load(sys.stdin); print(data.get('url', ''))" 2>/dev/null || echo "")
-            if [ -z "$url" ]; then
-              echo "❌ Alternative parsing also failed"
-              exit 1
+          # Service 2: Try filepush.dev as fallback
+          if [ "$upload_success" = false ]; then
+            echo "🔄 Trying filepush.dev..."
+            response=$(curl -s -m 300 -w "%{http_code}" -F "file=@$apk" https://filepush.dev/api/upload 2>/dev/null || echo "")
+            
+            if [ -n "$response" ]; then
+              http_code="${response: -3}"
+              json_response="${response%???}"
+              
+              if [ "$http_code" = "200" ]; then
+                url=$(echo "$json_response" | python3 -c "
+import sys, json
+try:
+    data = json.load(sys.stdin)
+    print(data.get('url', ''))
+except:
+    print('')
+" 2>/dev/null || echo "")
+                
+                if [ -n "$url" ] && [[ "$url" =~ ^https:// ]]; then
+                  echo "✅ filepush.dev success: $url"
+                  final_url="$url"
+                  upload_success=true
+                else
+                  echo "❌ filepush.dev returned invalid URL"
+                fi
+              else
+                echo "❌ filepush.dev returned HTTP $http_code"
+              fi
+            else
+              echo "❌ filepush.dev no response"
             fi
           fi
           
-          echo "✅ Successfully uploaded to: $url"
-          echo "upload_url=$url" >> $GITHUB_OUTPUT
+          # Service 3: Try file.io as second fallback
+          if [ "$upload_success" = false ]; then
+            echo "🔄 Trying file.io..."
+            response=$(curl -s -m 300 -F "file=@$apk" https://file.io 2>/dev/null || echo "")
+            
+            if [ -n "$response" ]; then
+              url=$(echo "$response" | python3 -c "
+import sys, json
+try:
+    data = json.load(sys.stdin)
+    print(data.get('link', ''))
+except:
+    print('')
+" 2>/dev/null || echo "")
+              
+              if [ -n "$url" ] && [[ "$url" =~ ^https:// ]]; then
+                echo "✅ file.io success: $url"
+                final_url="$url"
+                upload_success=true
+              else
+                echo "❌ file.io returned invalid URL"
+              fi
+            else
+              echo "❌ file.io no response"
+            fi
+          fi
+          
+          # Service 4: Try 0x0.st as final fallback
+          if [ "$upload_success" = false ]; then
+            echo "🔄 Trying 0x0.st..."
+            url=$(curl -s -m 300 -F "file=@$apk" https://0x0.st 2>/dev/null || echo "")
+            
+            if [ -n "$url" ] && [[ "$url" =~ ^https:// ]] && [[ ${#url} -gt 15 ]]; then
+              echo "✅ 0x0.st success: $url"
+              final_url="$url"
+              upload_success=true
+            else
+              echo "❌ 0x0.st failed or invalid URL: $url"
+            fi
+          fi
+          
+          # Service 5: Try tmpfiles.org as last resort
+          if [ "$upload_success" = false ]; then
+            echo "🔄 Trying tmpfiles.org..."
+            response=$(curl -s -m 300 -F "file=@$apk" https://tmpfiles.org/api/v1/upload 2>/dev/null || echo "")
+            
+            if [ -n "$response" ]; then
+              url=$(echo "$response" | python3 -c "
+import sys, json
+try:
+    data = json.load(sys.stdin)
+    if data.get('status') == 'success':
+        print(data.get('data', {}).get('url', ''))
+    else:
+        print('')
+except:
+    print('')
+" 2>/dev/null || echo "")
+              
+              if [ -n "$url" ] && [[ "$url" =~ ^https:// ]]; then
+                echo "✅ tmpfiles.org success: $url"
+                final_url="$url"
+                upload_success=true
+              else
+                echo "❌ tmpfiles.org returned invalid URL"
+              fi
+            else
+              echo "❌ tmpfiles.org no response"
+            fi
+          fi
+          
+          if [ "$upload_success" = false ]; then
+            echo "❌ All upload services failed"
+            echo "🔄 Creating GitHub Release as final fallback..."
+            
+            # Create a GitHub release as absolute final fallback
+            tag_name="build-${{ github.run_number }}-${{ needs.Get_Info.outputs.branch_name }}"
+            release_name="APK Build #${{ github.run_number }} (${{ needs.Get_Info.outputs.branch_name }})"
+            
+            # Create release
+            release_response=$(curl -s -X POST \
+              -H "Authorization: token ${{ secrets.GITHUB_TOKEN }}" \
+              -H "Accept: application/vnd.github.v3+json" \
+              "https://api.github.com/repos/${{ github.repository }}/releases" \
+              -d "{
+                \"tag_name\": \"$tag_name\",
+                \"name\": \"$release_name\",
+                \"body\": \"🚀 **Automated APK Build**\\n\\n- **Branch:** \`${{ needs.Get_Info.outputs.branch_name }}\`\\n- **Author:** ${{ needs.Get_Info.outputs.commit_author }}\\n- **Date:** ${{ needs.Get_Info.outputs.date_time }}\\n\\nDownload the APK below ⬇️\",
+                \"draft\": false,
+                \"prerelease\": ${{ needs.Get_Info.outputs.branch_name != 'main' }}
+              }")
+            
+            upload_url=$(echo "$release_response" | python3 -c "
+import sys, json
+try:
+    data = json.load(sys.stdin)
+    print(data.get('upload_url', '').replace('{?name,label}', ''))
+except:
+    print('')
+" 2>/dev/null || echo "")
+            
+            if [ -n "$upload_url" ]; then
+              # Upload APK to release
+              curl -s -X POST \
+                -H "Authorization: token ${{ secrets.GITHUB_TOKEN }}" \
+                -H "Content-Type: application/vnd.android.package-archive" \
+                --data-binary "@$apk" \
+                "$upload_url?name=$(basename "$apk")"
+              
+              final_url="https://github.com/${{ github.repository }}/releases/download/$tag_name/$(basename "$apk")"
+              echo "✅ GitHub Release created: $final_url"
+              upload_success=true
+            fi
+          fi
+          
+          if [ "$upload_success" = false ]; then
+            echo "❌ All upload methods failed including GitHub Release"
+            exit 1
+          fi
+          
+          echo "upload_url=$final_url" >> $GITHUB_OUTPUT
 
       - name: Upload APK to GitHub Artifact
         uses: actions/upload-artifact@v4
