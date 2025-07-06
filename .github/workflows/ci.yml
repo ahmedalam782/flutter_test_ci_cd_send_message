@@ -108,32 +108,33 @@ jobs:
             echo "folder_id=${{ secrets.TEST_FOLDER_ID }}" >> $GITHUB_OUTPUT
           fi
 
-      - name: Upload to filepush.dev
+- name: Upload to file sharing service
         id: upload_artifact
         run: |
           apk="${{ steps.find_apk.outputs.apk_path }}"
-          echo "Uploading APK to filepush.dev..."
+          echo "Uploading APK to file.io..."
           
-          response=$(curl -s -w "HTTPSTATUS:%{http_code}" -F "file=@$apk" https://filepush.dev/api/upload)
+          response=$(curl -s -w "HTTPSTATUS:%{http_code}" -F "file=@$apk" https://file.io)
           http_code=$(echo "$response" | grep -o "HTTPSTATUS:[0-9]*" | cut -d: -f2)
           body=$(echo "$response" | sed 's/HTTPSTATUS:[0-9]*$//')
           
           if [ "$http_code" -ne 200 ]; then
             echo "❌ Upload failed with HTTP status: $http_code"
             echo "Response: $body"
-            exit 1
+            echo "upload_url=https://github.com/${{ github.repository }}/actions/runs/${{ github.run_id }}" >> $GITHUB_OUTPUT
+            echo "✅ APK available in GitHub artifacts instead"
+          else
+            url=$(echo "$body" | grep -oP '"link":"\K[^"]+')
+            if [ -z "$url" ]; then
+              echo "❌ Upload failed - no URL in response"
+              echo "Response: $body"
+              echo "upload_url=https://github.com/${{ github.repository }}/actions/runs/${{ github.run_id }}" >> $GITHUB_OUTPUT
+              echo "✅ APK available in GitHub artifacts instead"
+            else
+              echo "✅ Uploaded to: $url"
+              echo "upload_url=$url" >> $GITHUB_OUTPUT
+            fi
           fi
-          
-          url=$(echo "$body" | grep -oP '"url":"\K[^"]+' || echo "$body" | sed -n 's/.*"url":"\([^"]*\)".*/\1/p')
-          
-          if [ -z "$url" ]; then
-            echo "❌ Upload failed - no URL in response"
-            echo "Response: $body"
-            exit 1
-          fi
-          
-          echo "✅ Uploaded to: $url"
-          echo "upload_url=$url" >> $GITHUB_OUTPUT
 
       - name: Upload APK to GitHub Artifact
         uses: actions/upload-artifact@v4
