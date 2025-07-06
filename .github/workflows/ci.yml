@@ -1,38 +1,251 @@
-- name: Upload APK to Google Drive
-  id: upload_artifact
-  env:
-    GOOGLE_DRIVE_CREDENTIALS: ${{ secrets.GOOGLE_DRIVE_CREDENTIALS }}
-    GOOGLE_DRIVE_FOLDER_ID: ${{ steps.select_folder.outputs.folder_id }}
-  run: |
-    echo "$GOOGLE_DRIVE_CREDENTIALS" > credentials.json
+name: CI/CD Build APK and Upload to Drive and Notify
 
-    pip install --quiet google-api-python-client google-auth google-auth-httplib2 google-auth-oauthlib
+on:
+  push:
+    branches: [main, test]
+  workflow_dispatch:
 
-    python3 <<EOF > drive_output.txt
-import os
-from google.oauth2 import service_account
-from googleapiclient.discovery import build
-from googleapiclient.http import MediaFileUpload
+jobs:
+  delete-artifacts:
+    runs-on: ubuntu-latest
+    steps:
+      - uses: kolpav/purge-artifacts-action@v1
+        with:
+          token: ${{ secrets.GITHUB_TOKEN }}
+          expire-in: 0days
 
-SCOPES = ['https://www.googleapis.com/auth/drive.file']
-APK_PATH = '${{ steps.find_apk.outputs.apk_path }}'
-FOLDER_ID = os.environ.get('GOOGLE_DRIVE_FOLDER_ID')
+  Get_Info:
+    runs-on: ubuntu-latest
+    outputs:
+      branch_name: ${{ steps.branch_name.outputs.branch_name }}
+      project_name: ${{ steps.project_name.outputs.project_name }}
+      commit_author: ${{ steps.commit_author.outputs.commit_author }}
+      commit_author_email: ${{ steps.commit_author_email.outputs.commit_author_email }}
+      date_time: ${{ steps.date_time.outputs.date_time }}
+      date_url: ${{ steps.date_url.outputs.date_url }}
+      commit_message: ${{ steps.commit_message.outputs.commit_message }}
+    steps:
+      - uses: actions/checkout@v4
+        with:
+          fetch-depth: 2
+      - id: branch_name
+        run: echo "branch_name=${GITHUB_REF#refs/heads/}" >> $GITHUB_OUTPUT
+      - id: project_name
+        run: echo "project_name=${GITHUB_REPOSITORY#*/}" >> $GITHUB_OUTPUT
+      - id: commit_author
+        run: echo "commit_author=$(git log -1 --pretty=%an)" >> $GITHUB_OUTPUT
+      - id: commit_author_email
+        run: echo "commit_author_email=$(git log -1 --pretty=%ae)" >> $GITHUB_OUTPUT
+      - id: date_time
+        run: echo "date_time=$(git log -1 --pretty=%cd --date=format:'%B %d, %Y %I:%M %p')" >> $GITHUB_OUTPUT
+      - id: date_url
+        run: echo "date_url=$(git log -1 --pretty=%cd --date=format:'%Y-%m-%d')" >> $GITHUB_OUTPUT
+      - id: commit_message
+        run: echo "commit_message=$(git log -1 --pretty=%B | head -1)" >> $GITHUB_OUTPUT
 
-credentials = service_account.Credentials.from_service_account_file(
-    'credentials.json', scopes=SCOPES)
-drive_service = build('drive', 'v3', credentials=credentials)
+  Build_And_Upload_APK:
+    needs: [Get_Info, delete-artifacts]
+    runs-on: ubuntu-latest
+    outputs:
+      folder_id: ${{ steps.select_folder.outputs.folder_id }}
+      upload_url: ${{ steps.upload_artifact.outputs.upload_url }}
+      apk_size: ${{ steps.apk_info.outputs.apk_size }}
+    steps:
+      - uses: actions/checkout@v4
 
-file_metadata = {'name': 'app-release.apk', 'parents': [FOLDER_ID]}
-media = MediaFileUpload(APK_PATH, mimetype='application/vnd.android.package-archive')
-uploaded_file = drive_service.files().create(
-    body=file_metadata,
-    media_body=media,
-    fields='webViewLink, webContentLink'
-).execute()
+      - uses: actions/setup-java@v4
+        with:
+          distribution: 'temurin'
+          java-version: '17'
 
-view_link = uploaded_file.get('webViewLink')
-print(f"::notice::🔗 Uploaded: {view_link}")
-print(f"upload_url={view_link}")
-EOF
+      - uses: subosito/flutter-action@v2
+        with:
+          flutter-version: 3.29.3
+          channel: stable
+          cache: true
 
-    grep upload_url drive_output.txt >> $GITHUB_OUTPUT
+      - name: Get dependencies
+        run: flutter pub get
+
+      - name: Analyze code
+        run: flutter analyze
+
+      - name: Run tests
+        run: flutter test
+
+      - name: Build APK
+        run: |
+          flutter clean
+          flutter pub get
+          flutter build apk --release --no-tree-shake-icons
+
+      - name: Find APK and get info
+        id: find_apk
+        run: |
+          echo "Searching for APK files..."
+          apk_path="build/app/outputs/flutter-apk/app-release.apk"
+          if [ ! -f "$apk_path" ]; then
+            echo "APK not found at expected location!"
+            find . -name "*.apk" -type f
+            exit 1
+          fi
+          echo "apk_path=$apk_path" >> $GITHUB_OUTPUT
+          
+      - name: Get APK info
+        id: apk_info
+        run: |
+          apk_path="${{ steps.find_apk.outputs.apk_path }}"
+          apk_size=$(du -h "$apk_path" | cut -f1)
+          echo "apk_size=$apk_size" >> $GITHUB_OUTPUT
+          echo "APK size: $apk_size"
+
+      - name: Select Google Drive folder
+        id: select_folder
+        run: |
+          if [[ "${{ needs.Get_Info.outputs.branch_name }}" == "main" ]]; then
+            echo "folder_id=${{ secrets.MAIN_FOLDER_ID }}" >> $GITHUB_OUTPUT
+          else
+            echo "folder_id=${{ secrets.TEST_FOLDER_ID }}" >> $GITHUB_OUTPUT
+          fi
+
+      - name: Upload to filepush.dev
+        id: upload_artifact
+        run: |
+          apk="${{ steps.find_apk.outputs.apk_path }}"
+          echo "Uploading APK to filepush.dev..."
+          
+          response=$(curl -s -w "HTTPSTATUS:%{http_code}" -F "file=@$apk" https://filepush.dev/api/upload)
+          http_code=$(echo "$response" | grep -o "HTTPSTATUS:[0-9]*" | cut -d: -f2)
+          body=$(echo "$response" | sed 's/HTTPSTATUS:[0-9]*$//')
+          
+          if [ "$http_code" -ne 200 ]; then
+            echo "❌ Upload failed with HTTP status: $http_code"
+            echo "Response: $body"
+            exit 1
+          fi
+          
+          url=$(echo "$body" | grep -oP '"url":"\K[^"]+' || echo "$body" | sed -n 's/.*"url":"\([^"]*\)".*/\1/p')
+          
+          if [ -z "$url" ]; then
+            echo "❌ Upload failed - no URL in response"
+            echo "Response: $body"
+            exit 1
+          fi
+          
+          echo "✅ Uploaded to: $url"
+          echo "upload_url=$url" >> $GITHUB_OUTPUT
+
+      - name: Upload APK to GitHub Artifact
+        uses: actions/upload-artifact@v4
+        with:
+          name: app-release-${{ needs.Get_Info.outputs.branch_name }}-${{ needs.Get_Info.outputs.date_url }}
+          path: "${{ steps.find_apk.outputs.apk_path }}"
+          retention-days: 30
+
+  Notify_User:
+    needs: [Get_Info, Build_And_Upload_APK]
+    runs-on: ubuntu-latest
+    if: always() && needs.Build_And_Upload_APK.result == 'success'
+    steps:
+      - uses: actions/checkout@v4
+
+      - name: Notify Telegram Channel
+        uses: appleboy/telegram-action@master
+        with:
+          to: ${{ secrets.TELEGRAM_CHANNEL_ID }}
+          token: ${{ secrets.TELEGRAM_BOT_TOKEN }}
+          format: markdown
+          message: |
+            🚀 *New APK Build Uploaded* 🚀
+
+            📱 *Project:* `${{ needs.Get_Info.outputs.project_name }}`
+            🌿 *Branch:* `${{ needs.Get_Info.outputs.branch_name }}`
+            👤 *Author:* `${{ needs.Get_Info.outputs.commit_author }}`
+            📩 *Email:* `${{ needs.Get_Info.outputs.commit_author_email }}`
+            📅 *Date:* `${{ needs.Get_Info.outputs.date_time }}`
+            💬 *Commit:* `${{ needs.Get_Info.outputs.commit_message }}`
+            📦 *Size:* `${{ needs.Build_And_Upload_APK.outputs.apk_size }}`
+
+            🔗 [Download APK](${{ needs.Build_And_Upload_APK.outputs.upload_url }})
+
+      - name: Notify Gmail
+        uses: dawidd6/action-send-mail@v3
+        with:
+          server_address: smtp.gmail.com
+          server_port: 465
+          secure: true
+          username: ${{ secrets.GMAIL_USERNAME }}
+          password: ${{ secrets.GMAIL_PASSWORD }}
+          from: ${{ secrets.GMAIL_USERNAME }}
+          to: mazenn770@gmail.com
+          subject: "🚀 CI/CD - New APK Build for ${{ needs.Get_Info.outputs.project_name }}"
+          convert_markdown: true
+          body: |
+            # 📱 New APK Build Ready!
+
+            Dear Team,
+
+            A new APK build has been successfully created and uploaded.
+
+            ## 📋 Build Details
+            - **Project:** ${{ needs.Get_Info.outputs.project_name }}
+            - **Branch:** ${{ needs.Get_Info.outputs.branch_name }}
+            - **Author:** ${{ needs.Get_Info.outputs.commit_author }}
+            - **Email:** ${{ needs.Get_Info.outputs.commit_author_email }}
+            - **Date:** ${{ needs.Get_Info.outputs.date_time }}
+            - **Commit Message:** ${{ needs.Get_Info.outputs.commit_message }}
+            - **APK Size:** ${{ needs.Build_And_Upload_APK.outputs.apk_size }}
+
+            ## 📥 Download
+            🔗 **APK Download:** ${{ needs.Build_And_Upload_APK.outputs.upload_url }}
+
+            ---
+            Best regards,  
+            **${{ needs.Get_Info.outputs.commit_author }}**  
+            Flutter Developer  
+            IX Solutions Company  
+
+            *This is an automated message from GitHub Actions CI/CD*
+
+  Notify_Failure:
+    needs: [Get_Info, Build_And_Upload_APK]
+    runs-on: ubuntu-latest
+    if: always() && needs.Build_And_Upload_APK.result == 'failure'
+    steps:
+      - uses: actions/checkout@v4
+
+      - name: Notify Telegram on Failure
+        uses: appleboy/telegram-action@master
+        with:
+          to: ${{ secrets.TELEGRAM_CHANNEL_ID }}
+          token: ${{ secrets.TELEGRAM_BOT_TOKEN }}
+          format: markdown
+          message: |
+            ❌ *Build Failed* ❌
+
+            📱 *Project:* `${{ needs.Get_Info.outputs.project_name }}`
+            🌿 *Branch:* `${{ needs.Get_Info.outputs.branch_name }}`
+            👤 *Author:* `${{ needs.Get_Info.outputs.commit_author }}`
+            📅 *Date:* `${{ needs.Get_Info.outputs.date_time }}`
+
+            Please check the [workflow logs](${{ github.server_url }}/${{ github.repository }}/actions/runs/${{ github.run_id }}) for details.
+
+      - name: Notify Gmail on Failure
+        uses: dawidd6/action-send-mail@v3
+        with:
+          server_address: smtp.gmail.com
+          server_port: 465
+          secure: true
+          username: ${{ secrets.GMAIL_USERNAME }}
+          password: ${{ secrets.GMAIL_PASSWORD }}
+          from: ${{ secrets.GMAIL_USERNAME }}
+          to: mazenn770@gmail.com
+          subject: "❌ CI/CD Build Failed - ${{ needs.Get_Info.outputs.project_name }}"
+          body: |
+            Build failed for project: ${{ needs.Get_Info.outputs.project_name }}
+            Branch: ${{ needs.Get_Info.outputs.branch_name }}
+            Author: ${{ needs.Get_Info.outputs.commit_author }}
+            Date: ${{ needs.Get_Info.outputs.date_time }}
+
+            Please check the workflow logs for details:
+            ${{ github.server_url }}/${{ github.repository }}/actions/runs/${{ github.run_id }}
