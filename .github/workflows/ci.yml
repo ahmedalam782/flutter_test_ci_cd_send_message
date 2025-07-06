@@ -1,82 +1,38 @@
-name: Build and Upload APK to Google Drive
+- name: Upload APK to Google Drive
+  id: upload_artifact
+  env:
+    GOOGLE_DRIVE_CREDENTIALS: ${{ secrets.GOOGLE_DRIVE_CREDENTIALS }}
+    GOOGLE_DRIVE_FOLDER_ID: ${{ steps.select_folder.outputs.folder_id }}
+  run: |
+    echo "$GOOGLE_DRIVE_CREDENTIALS" > credentials.json
 
-on:
-  push:
-    branches: [main]
-  workflow_dispatch:
+    pip install --quiet google-api-python-client google-auth google-auth-httplib2 google-auth-oauthlib
 
-permissions:
-  contents: read
-
-jobs:
-  build-upload:
-    runs-on: ubuntu-latest
-
-    steps:
-      - name: Checkout code
-        uses: actions/checkout@v4
-
-      - name: Install Flutter
-        uses: subosito/flutter-action@v2
-        with:
-          flutter-version: '3.22.1'
-
-      - name: Install dependencies
-        run: flutter pub get
-
-      - name: Build release APK
-        run: flutter build apk --release
-
-      - name: Set up Python
-        uses: actions/setup-python@v4
-        with:
-          python-version: 3.10
-
-      - name: Install Google Drive dependencies
-        run: pip install --quiet google-api-python-client google-auth google-auth-httplib2 google-auth-oauthlib
-
-      - name: Upload APK to Google Drive
-        id: upload_drive
-        env:
-          GOOGLE_DRIVE_CREDENTIALS: ${{ secrets.GOOGLE_DRIVE_CREDENTIALS }}
-        run: |
-          echo "$GOOGLE_DRIVE_CREDENTIALS" > credentials.json
-
-          python <<EOF
-import json
+    python3 <<EOF > drive_output.txt
+import os
 from google.oauth2 import service_account
 from googleapiclient.discovery import build
 from googleapiclient.http import MediaFileUpload
 
 SCOPES = ['https://www.googleapis.com/auth/drive.file']
-APK_PATH = 'build/app/outputs/flutter-apk/app-release.apk'
+APK_PATH = '${{ steps.find_apk.outputs.apk_path }}'
+FOLDER_ID = os.environ.get('GOOGLE_DRIVE_FOLDER_ID')
 
 credentials = service_account.Credentials.from_service_account_file(
     'credentials.json', scopes=SCOPES)
 drive_service = build('drive', 'v3', credentials=credentials)
 
-file_metadata = {'name': 'app-release.apk'}
+file_metadata = {'name': 'app-release.apk', 'parents': [FOLDER_ID]}
 media = MediaFileUpload(APK_PATH, mimetype='application/vnd.android.package-archive')
-file = drive_service.files().create(
+uploaded_file = drive_service.files().create(
     body=file_metadata,
     media_body=media,
-    fields='id, webViewLink, webContentLink'
+    fields='webViewLink, webContentLink'
 ).execute()
 
-web_link = file.get('webViewLink')
-download_link = file.get('webContentLink')
-
-print(f"✅ APK uploaded to Google Drive!")
-print(f"🔗 View link: {web_link}")
-print(f"⬇️ Download link: {download_link}")
-
-# Output for other steps
-with open(os.environ['GITHUB_OUTPUT'], 'a') as f:
-    f.write(f"drive_view_url={web_link}\n")
-    f.write(f"drive_download_url={download_link}\n")
+view_link = uploaded_file.get('webViewLink')
+print(f"::notice::🔗 Uploaded: {view_link}")
+print(f"upload_url={view_link}")
 EOF
 
-      - name: Show Drive Link
-        run: |
-          echo "✅ View link: ${{ steps.upload_drive.outputs.drive_view_url }}"
-          echo "⬇️ Download link: ${{ steps.upload_drive.outputs.drive_download_url }}"
+    grep upload_url drive_output.txt >> $GITHUB_OUTPUT
