@@ -63,18 +63,26 @@ jobs:
           flutter pub get
           flutter build apk --release --no-tree-shake-icons
 
-      - name: Find APK
+      - name: Find and verify APK
         id: find_apk
         run: |
-          echo "Searching for APK files..."
-          apk_path="build/app/outputs/flutter-apk/app-release.apk"
-          if [ ! -f "$apk_path" ]; then
+          if [ -f "build/app/outputs/flutter-apk/app-release.apk" ]; then
+            apk_path="build/app/outputs/flutter-apk/app-release.apk"
+          elif [ -f "build/app/outputs/apk/release/app-release.apk" ]; then
+            apk_path="build/app/outputs/apk/release/app-release.apk"
+          else
+            apk_path=$(find . -name "*release*.apk" -type f | head -n 1)
+          fi
+
+          if [ -z "$apk_path" ]; then
             echo "APK not found!"
             exit 1
           fi
+
+          echo "Found APK: $apk_path"
           echo "apk_path=$apk_path" >> $GITHUB_OUTPUT
 
-      - name: Select Google Drive folder
+      - name: Select folder (Google Drive optional)
         id: select_folder
         run: |
           if [[ "${{ needs.Get_Info.outputs.branch_name }}" == "main" ]]; then
@@ -83,17 +91,50 @@ jobs:
             echo "folder_id=${{ secrets.TEST_FOLDER_ID }}" >> $GITHUB_OUTPUT
           fi
 
-      - name: Upload to filepush.dev
+      - name: Check credentials
+        id: check_credentials
+        env:
+          GDRIVE_CREDS: ${{ secrets.GOOGLE_DRIVE_CREDENTIALS }}
+        run: |
+          if [ -n "${GDRIVE_CREDS}" ]; then
+            echo "has_credentials=true" >> $GITHUB_OUTPUT
+          else
+            echo "has_credentials=false" >> $GITHUB_OUTPUT
+          fi
+
+      - name: Upload to Google Drive (disabled)
+        if: false
+        uses: adityak74/google-drive-upload-git-action@main
+        with:
+          credentials: "${{ secrets.GOOGLE_DRIVE_CREDENTIALS }}"
+          filename: "${{ steps.find_apk.outputs.apk_path }}"
+          folderId: "${{ steps.select_folder.outputs.folder_id }}"
+          name: "${{ needs.Get_Info.outputs.branch_name }}_apk_${{ needs.Get_Info.outputs.date_time }}.apk"
+          overwrite: "true"
+          mimeType: "application/vnd.android.package-archive"
+
+      - name: Install jq
+        run: sudo apt-get update && sudo apt-get install -y jq
+
+      - name: Upload APK to filepush.dev
         id: upload_artifact
         run: |
-          apk="${{ steps.find_apk.outputs.apk_path }}"
-          response=$(curl -s -F "file=@$apk" https://filepush.dev/api/upload)
-          url=$(echo "$response" | grep -oP '"url":"\K[^"]+')
-          if [ -z "$url" ]; then
-            echo "❌ Upload failed"
-            echo "Response: $response"
+          apk="build/app/outputs/flutter-apk/app-release.apk"
+
+          if [ ! -f "$apk" ]; then
+            echo "❌ APK not found at $apk"
             exit 1
           fi
+
+          response=$(curl -s -F "file=@$apk" https://filepush.dev/api/upload)
+          echo "Response: $response"
+
+          url=$(echo "$response" | jq -r '.url // empty')
+          if [ -z "$url" ]; then
+            echo "❌ Upload failed"
+            exit 1
+          fi
+
           echo "✅ Uploaded to: $url"
           echo "upload_url=$url" >> $GITHUB_OUTPUT
 
@@ -102,55 +143,3 @@ jobs:
         with:
           name: app-release.apk
           path: "${{ steps.find_apk.outputs.apk_path }}"
-
-  Notify_User:
-    needs: [Get_Info, Build_And_Upload_APK]
-    runs-on: ubuntu-latest
-    steps:
-      - uses: actions/checkout@v2
-
-      - name: Notify Telegram Channel
-        uses: appleboy/telegram-action@master
-        with:
-          to: ${{ secrets.TELEGRAM_CHANNEL_ID }}
-          token: ${{ secrets.TELEGRAM_BOT_TOKEN }}
-          format: markdown
-          message: |
-            🚀 *New APK Build Uploaded* 🚀
-
-            🔔 *Project:* `${{ needs.Get_Info.outputs.project_name }}`
-            🤖 *Branch:* `${{ needs.Get_Info.outputs.branch_name }}`
-            👤 *Author:* `${{ needs.Get_Info.outputs.commit_author }}`
-            📩 *Email:* `${{ needs.Get_Info.outputs.commit_author_email }}`
-            📅  `${{ needs.Get_Info.outputs.date_time }}`
-
-            🔗 [Download APK](${{ needs.Build_And_Upload_APK.outputs.upload_url }})
-
-      - name: Notify Gmail
-        uses: dawidd6/action-send-mail@v3
-        with:
-          server_address: smtp.gmail.com
-          server_port: 465
-          username: ${{ secrets.GMAIL_USERNAME }}
-          password: ${{ secrets.GMAIL_PASSWORD }}
-          from: ${{ needs.Get_Info.outputs.commit_author_email }}
-          to: mazenn770@gmail.com
-          subject: "CI 👉🏻 New APK Build Uploaded"
-          convert_markdown: true
-          body: |
-            Dear Sir,
-
-            A new APK build has been uploaded.
-
-            - Project: ${{ needs.Get_Info.outputs.project_name }}
-            - Branch: ${{ needs.Get_Info.outputs.branch_name }}
-            - Date: ${{ needs.Get_Info.outputs.date_time }}
-
-            Download it here:
-            🔗 APK: ${{ needs.Build_And_Upload_APK.outputs.upload_url }}
-
-            Best regards,  
-            ${{ needs.Get_Info.outputs.commit_author }}  
-            Flutter Developer  
-            IX Solutions Company  
-            Email: ${{ needs.Get_Info.outputs.commit_author_email }}
