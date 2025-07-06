@@ -1,145 +1,82 @@
-name: CI/CD Build APK and Upload to Drive and Notify
+name: Build and Upload APK to Google Drive
 
 on:
   push:
-    branches: [main, test]
+    branches: [main]
   workflow_dispatch:
 
+permissions:
+  contents: read
+
 jobs:
-  delete-artifacts:
+  build-upload:
     runs-on: ubuntu-latest
+
     steps:
-      - uses: kolpav/purge-artifacts-action@v1
+      - name: Checkout code
+        uses: actions/checkout@v4
+
+      - name: Install Flutter
+        uses: subosito/flutter-action@v2
         with:
-          token: ${{ secrets.GITHUB_TOKEN }}
-          expire-in: 0days
+          flutter-version: '3.22.1'
 
-  Get_Info:
-    runs-on: ubuntu-latest
-    outputs:
-      branch_name: ${{ steps.branch_name.outputs.branch_name }}
-      project_name: ${{ steps.project_name.outputs.project_name }}
-      commit_author: ${{ steps.commit_author.outputs.commit_author }}
-      commit_author_email: ${{ steps.commit_author_email.outputs.commit_author_email }}
-      date_time: ${{ steps.date_time.outputs.date_time }}
-      date_url: ${{ steps.date_url.outputs.date_url }}
-    steps:
-      - uses: actions/checkout@v2
-      - id: branch_name
-        run: echo "branch_name=${GITHUB_REF#refs/heads/}" >> $GITHUB_OUTPUT
-      - id: project_name
-        run: echo "project_name=${GITHUB_REPOSITORY#*/}" >> $GITHUB_OUTPUT
-      - id: commit_author
-        run: echo "commit_author=$(git log -1 --pretty=%an)" >> $GITHUB_OUTPUT
-      - id: commit_author_email
-        run: echo "commit_author_email=$(git log -1 --pretty=%ae)" >> $GITHUB_OUTPUT
-      - id: date_time
-        run: echo "date_time=$(git log -1 --pretty=%cd --date=format:'%B %d, %Y %I:%M %p')" >> $GITHUB_OUTPUT
-      - id: date_url
-        run: echo "date_url=$(git log -1 --pretty=%cd --date=format:'%Y-%m-%d')" >> $GITHUB_OUTPUT
+      - name: Install dependencies
+        run: flutter pub get
 
-  Build_And_Upload_APK:
-    needs: [Get_Info, delete-artifacts]
-    runs-on: ubuntu-latest
-    outputs:
-      folder_id: ${{ steps.select_folder.outputs.folder_id }}
-      upload_url: ${{ steps.upload_artifact.outputs.upload_url }}
-    steps:
-      - uses: actions/checkout@v2
+      - name: Build release APK
+        run: flutter build apk --release
 
-      - uses: actions/setup-java@v2
+      - name: Set up Python
+        uses: actions/setup-python@v4
         with:
-          distribution: 'adopt'
-          java-version: '17'
+          python-version: 3.10
 
-      - uses: subosito/flutter-action@v2
-        with:
-          flutter-version: 3.29.3
-          channel: stable
+      - name: Install Google Drive dependencies
+        run: pip install --quiet google-api-python-client google-auth google-auth-httplib2 google-auth-oauthlib
 
-      - name: Build APK
-        run: |
-          flutter clean
-          flutter pub get
-          flutter build apk --release --no-tree-shake-icons
-
-      - name: Find and verify APK
-        id: find_apk
-        run: |
-          if [ -f "build/app/outputs/flutter-apk/app-release.apk" ]; then
-            apk_path="build/app/outputs/flutter-apk/app-release.apk"
-          elif [ -f "build/app/outputs/apk/release/app-release.apk" ]; then
-            apk_path="build/app/outputs/apk/release/app-release.apk"
-          else
-            apk_path=$(find . -name "*release*.apk" -type f | head -n 1)
-          fi
-
-          if [ -z "$apk_path" ]; then
-            echo "APK not found!"
-            exit 1
-          fi
-
-          echo "Found APK: $apk_path"
-          echo "apk_path=$apk_path" >> $GITHUB_OUTPUT
-
-      - name: Select folder (Google Drive optional)
-        id: select_folder
-        run: |
-          if [[ "${{ needs.Get_Info.outputs.branch_name }}" == "main" ]]; then
-            echo "folder_id=${{ secrets.MAIN_FOLDER_ID }}" >> $GITHUB_OUTPUT
-          else
-            echo "folder_id=${{ secrets.TEST_FOLDER_ID }}" >> $GITHUB_OUTPUT
-          fi
-
-      - name: Check credentials
-        id: check_credentials
+      - name: Upload APK to Google Drive
+        id: upload_drive
         env:
-          GDRIVE_CREDS: ${{ secrets.GOOGLE_DRIVE_CREDENTIALS }}
+          GOOGLE_DRIVE_CREDENTIALS: ${{ secrets.GOOGLE_DRIVE_CREDENTIALS }}
         run: |
-          if [ -n "${GDRIVE_CREDS}" ]; then
-            echo "has_credentials=true" >> $GITHUB_OUTPUT
-          else
-            echo "has_credentials=false" >> $GITHUB_OUTPUT
-          fi
+          echo "$GOOGLE_DRIVE_CREDENTIALS" > credentials.json
 
-      - name: Upload to Google Drive (disabled)
-        if: false
-        uses: adityak74/google-drive-upload-git-action@main
-        with:
-          credentials: "${{ secrets.GOOGLE_DRIVE_CREDENTIALS }}"
-          filename: "${{ steps.find_apk.outputs.apk_path }}"
-          folderId: "${{ steps.select_folder.outputs.folder_id }}"
-          name: "${{ needs.Get_Info.outputs.branch_name }}_apk_${{ needs.Get_Info.outputs.date_time }}.apk"
-          overwrite: "true"
-          mimeType: "application/vnd.android.package-archive"
+          python <<EOF
+import json
+from google.oauth2 import service_account
+from googleapiclient.discovery import build
+from googleapiclient.http import MediaFileUpload
 
-      - name: Install jq
-        run: sudo apt-get update && sudo apt-get install -y jq
+SCOPES = ['https://www.googleapis.com/auth/drive.file']
+APK_PATH = 'build/app/outputs/flutter-apk/app-release.apk'
 
-      - name: Upload APK to filepush.dev
-        id: upload_artifact
+credentials = service_account.Credentials.from_service_account_file(
+    'credentials.json', scopes=SCOPES)
+drive_service = build('drive', 'v3', credentials=credentials)
+
+file_metadata = {'name': 'app-release.apk'}
+media = MediaFileUpload(APK_PATH, mimetype='application/vnd.android.package-archive')
+file = drive_service.files().create(
+    body=file_metadata,
+    media_body=media,
+    fields='id, webViewLink, webContentLink'
+).execute()
+
+web_link = file.get('webViewLink')
+download_link = file.get('webContentLink')
+
+print(f"✅ APK uploaded to Google Drive!")
+print(f"🔗 View link: {web_link}")
+print(f"⬇️ Download link: {download_link}")
+
+# Output for other steps
+with open(os.environ['GITHUB_OUTPUT'], 'a') as f:
+    f.write(f"drive_view_url={web_link}\n")
+    f.write(f"drive_download_url={download_link}\n")
+EOF
+
+      - name: Show Drive Link
         run: |
-          apk="build/app/outputs/flutter-apk/app-release.apk"
-
-          if [ ! -f "$apk" ]; then
-            echo "❌ APK not found at $apk"
-            exit 1
-          fi
-
-          response=$(curl -s -F "file=@$apk" https://filepush.dev/api/upload)
-          echo "Response: $response"
-
-          url=$(echo "$response" | jq -r '.url // empty')
-          if [ -z "$url" ]; then
-            echo "❌ Upload failed"
-            exit 1
-          fi
-
-          echo "✅ Uploaded to: $url"
-          echo "upload_url=$url" >> $GITHUB_OUTPUT
-
-      - name: Upload APK to GitHub Artifact
-        uses: actions/upload-artifact@v4
-        with:
-          name: app-release.apk
-          path: "${{ steps.find_apk.outputs.apk_path }}"
+          echo "✅ View link: ${{ steps.upload_drive.outputs.drive_view_url }}"
+          echo "⬇️ Download link: ${{ steps.upload_drive.outputs.drive_download_url }}"
