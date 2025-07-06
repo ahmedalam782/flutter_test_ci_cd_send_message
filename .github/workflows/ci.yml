@@ -108,7 +108,7 @@ jobs:
             echo "folder_id=${{ secrets.TEST_FOLDER_ID }}" >> $GITHUB_OUTPUT
           fi
 
-- name: Upload to file sharing service
+      - name: Upload to file sharing service
         id: upload_artifact
         run: |
           apk="${{ steps.find_apk.outputs.apk_path }}"
